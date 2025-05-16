@@ -1,20 +1,20 @@
 rad:
-  train_file: [ '/mnt/sda/lpf/data/vqa/data_RAD/trainset.json' ]
-  test_file: [ '/mnt/sda/lpf/data/vqa/data_RAD/testset.json' ]
-  answer_list: '/mnt/sda/lpf/data/vqa/data_RAD/answer_all_list.json'
-  vqa_root: '/mnt/sda/lpf/data/vqa/data_RAD/images/'  # vqa_rad
+  train_file: [ '/kaggle/input/processed-rad-vqa-dataset/trainset.json' ]
+  test_file: [ '/kaggle/input/processed-rad-vqa-dataset/testset.json' ]
+  answer_list: '/kaggle/input/processed-rad-vqa-dataset/answer_list.json'
+  vqa_root: '/kaggle/input/processed-rad-vqa-dataset/images/'  # vqa_rad
 pathvqa:
-  train_file: [ '/mnt/sda/lpf/data/vqa/data_PathVQA/pathvqa_train.json',
-                '/mnt/sda/lpf/data/vqa/data_PathVQA/pathvqa_val.json' ]
-  test_file: [ '/mnt/sda/lpf/data/vqa/data_PathVQA/pathvqa_test.json' ]
-  answer_list: '/mnt/sda/lpf/data/vqa/data_PathVQA/answer_trainval_list.json'
-  vqa_root: '/mnt/sda/lpf/data/vqa/data_PathVQA/images/'
+  train_file: [ '/kaggle/input/processed-pathvqa-vqa-dataset/trainset.json',
+                '/kaggle/input/processed-pathvqa-vqa-dataset/valset.json' ]
+  test_file: [ '/kaggle/input/processed-pathvqa-vqa-dataset/testset.json' ]
+  answer_list: '/kaggle/input/processed-pathvqa-vqa-dataset/answer_list.json'
+  vqa_root: '/kaggle/input/processed-pathvqa-vqa-dataset/images/'
 slake:
-  train_file: [ '/mnt/sda/lpf/data/vqa/data_Slake/en/slake_train.json',
-                '/mnt/sda/lpf/data/vqa/data_Slake/en/slake_val.json' ]
-  test_file: [ '/mnt/sda/lpf/data/vqa/data_Slake/en/slake_test.json' ]
-  answer_list: '/mnt/sda/lpf/data/vqa/data_Slake/en/answer_trainval_list.json'
-  vqa_root: '/mnt/sda/lpf/data/vqa/data_Slake/imgs/'  # slake
+  train_file: [ '/kaggle/input/processed-slake-vqa-dataset/trainset.json',
+                '/kaggle/input/processed-slake-vqa-dataset/valset.json' ]
+  test_file: [ '/kaggle/input/processed-slake-vqa-dataset/testset.json' ]
+  answer_list: '/kaggle/input/processed-slake-vqa-dataset/answer_list.json'
+  vqa_root: '/kaggle/input/processed-slake-vqa-dataset/images/'  # slake
 med2019:
   train_file: [ '/mnt/sda/lpf/data/vqa/vqa_med/2019/vqa_med_2019_train.json',
                 '/mnt/sda/lpf/data/vqa/vqa_med/2019/vqa_med_2019_valid.json' ]

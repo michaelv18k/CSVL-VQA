@@ -136,7 +136,9 @@ def main(args, config):
     if hasattr(model, 'text_encoder'):
         model.text_encoder.gradient_checkpointing = True
 
-    model = model.to(device)
+    # model = model.to(device)
+    model = model.to_empty(device=device)
+
     
     # Initialize gradient scaler for mixed precision
     scaler = GradScaler()

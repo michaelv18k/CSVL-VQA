@@ -252,7 +252,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    args.output_dir = '/mnt/sda/lpf/weights/output/V2/vqa/' + args.dataset_use + args.output_suffix
+    # args.output_dir = '/mnt/sda/lpf/weights/output/V2/vqa/' + args.dataset_use + args.output_suffix
 
     config = yaml.load(open('./configs/VQA.yaml', 'r'), Loader=yaml.Loader)
 

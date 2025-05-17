@@ -215,7 +215,9 @@ class BertTokenizer(PreTrainedTokenizer):
     # def get_vocab(self):
     #     return dict(self.vocab, **self.added_tokens_encoder)
     def get_vocab(self):
-        base_vocab = self.tokenizer.get_vocab()  
+        # base_vocab = self.tokenizer.get_vocab()  
+        base_vocab =self.get_vocab()
+
         return dict(base_vocab, **self.added_tokens_encoder)  
 
     def _tokenize(self, text):

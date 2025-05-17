@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import torch
 import torch.distributed as dist
+from torch.cuda.amp import GradScaler, autocast  # Added for mixed precision
 
 from models.model_vqa import MUMC_VQA
 from models.vision.vit import interpolate_pos_embed
@@ -19,7 +20,7 @@ from utils import cosine_lr_schedule
 
 from vqaEvaluate import compute_vqa_acc
 
-def train(model, data_loader, optimizer, epoch, device, config):
+def train(model, data_loader, optimizer, epoch, device, config, scaler):  # Added scaler
     # train
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -27,8 +28,8 @@ def train(model, data_loader, optimizer, epoch, device, config):
     metric_logger.add_meter('loss', utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
     header = 'Train Epoch: [{}]'.format(epoch)
     print_freq = 50
+    
     for i, (image, question, answer) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-
         image = image.to(device, non_blocking=True)
 
         if epoch > 0 or not config['warm_up']:
@@ -36,48 +37,66 @@ def train(model, data_loader, optimizer, epoch, device, config):
         else:
             alpha = config['alpha'] * min(1, i / len(data_loader))
 
-        loss = model(image, question, answer, train=True, alpha=alpha)
+        with autocast():  # Mixed precision
+            loss = model(image, question, answer, train=True, alpha=alpha)
 
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()  # Scaled backward
+        scaler.step(optimizer)
+        scaler.update()
 
         metric_logger.update(loss=loss.item())
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-    # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger.global_avg())
     return {k: "{:.6f}".format(meter.global_avg) for k, meter in metric_logger.meters.items()}
-
 
 @torch.no_grad()
 def evaluation(model, data_loader, device, config):
     # test
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Generate VQA test result:'
+    header = 'Generate VQA test result:'    
     print_freq = 50
 
     result = []
-
     answer_list = [answer + config['eos'] for answer in data_loader.dataset.answer_list]
+
+    # Process in smaller chunks if needed
+    chunk_size = config.get('eval_chunk_size', len(data_loader.dataset))
+    if chunk_size < len(data_loader.dataset):
+        print(f"Evaluating in chunks of {chunk_size} samples")
 
     for n, (image, question, question_id) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         image = image.to(device, non_blocking=True)
-        topk_ids, topk_probs = model(image, question, answer_list, train=False, k=config['k_test'])
+        
+        with autocast():  # Mixed precision for evaluation
+            topk_ids, topk_probs = model(image, question, answer_list, train=False, k=config['k_test'])
 
         for ques_id, topk_id, topk_prob in zip(question_id, topk_ids, topk_probs):
             ques_id = int(ques_id.item())
             _, pred = topk_prob.max(dim=0)
             result.append({"qid": ques_id, "answer": data_loader.dataset.answer_list[topk_id[pred]]})
+            
+        # Clear cache periodically during evaluation
+        if n % 50 == 0:
+            torch.cuda.empty_cache()
+    
     return result
 
-
 def main(args, config):
+    # Memory optimization settings
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    
+    # Set PyTorch memory config
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    
     if args.distributed:
         utils.init_distributed_mode(args)
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
 
     # fix the seed for reproducibility
     utils.set_seed(args.seed + utils.get_rank())
@@ -88,7 +107,11 @@ def main(args, config):
     print('train dataset size: ', len(datasets[0]))
     print('test dataset size: ', len(datasets[1]))
 
-    if args.distributed:
+    # Reduce batch sizes if needed 
+    config['batch_size_train'] = config.get('batch_size_train', 8) // 2  # Reduced batch size
+    config['batch_size_test'] = config.get('batch_size_test', 8) // 2    # Reduced batch size
+
+    if args.distributed:    
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
         samplers = create_sampler(datasets, [True, False], num_tasks, global_rank)
@@ -96,40 +119,48 @@ def main(args, config):
         samplers = [None, None]
 
     train_loader, test_loader = create_loader(datasets, samplers,
-                                              batch_size=[config['batch_size_train'], config['batch_size_test']],
-                                              num_workers=[4, 4], is_trains=[True, False],
-                                              collate_fns=[vqa_collate_fn, None])
+                                            batch_size=[config['batch_size_train'], config['batch_size_test']],
+                                            num_workers=[4, 4], is_trains=[True, False],
+                                            collate_fns=[vqa_collate_fn, None])
 
     tokenizer = BertTokenizer.from_pretrained(args.text_encoder)
 
     #### Creating Model ####
     print("Creating model")
     model = MUMC_VQA(config=config, text_encoder=args.text_encoder, text_decoder=args.text_decoder, tokenizer=tokenizer)
-    # model = model.to(device)
-    model = model.to_empty(device=device)
-    # print(model)
+    
+    # Memory optimization techniques
+    model.gradient_checkpointing = True
+    if hasattr(model, 'visual_encoder'):
+        model.visual_encoder.gradient_checkpointing = True
+    if hasattr(model, 'text_encoder'):
+        model.text_encoder.gradient_checkpointing = True
+
+    model = model.to(device)
+    
+    # Initialize gradient scaler for mixed precision
+    scaler = GradScaler()
+    
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=config['init_lr'], weight_decay=config['weight_decay'])
 
     if args.checkpoint:
         checkpoint = torch.load(args.checkpoint, map_location='cpu')
         state_dict = checkpoint['model']
-        # state_dict = checkpoint
 
-        # reshape positional embedding to accomodate for image resolution change
+        # reshape positional embedding
         pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'], model.visual_encoder)
         state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
 
         if not args.evaluate:
             if config['distill']:
                 m_pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder_m.pos_embed'],
-                                                             model.visual_encoder_m)
+                                                         model.visual_encoder_m)
                 state_dict['visual_encoder_m.pos_embed'] = m_pos_embed_reshaped
 
             for key in list(state_dict.keys()):
                 if 'bert' in key:
                     encoder_key = key.replace('bert.', '')
                     state_dict[encoder_key] = state_dict[key]
-                    # intialize text decoder as multimodal encoder (last 6 layers of model.text_encoder)
                 if 'text_encoder' in key:
                     if 'layer' in key:
                         encoder_keys = key.split('.')
@@ -145,7 +176,6 @@ def main(args, config):
                         encoder_key = key
                     decoder_key = encoder_key.replace('text_encoder', 'text_decoder')
                     state_dict[decoder_key] = state_dict[key]
-
                     del state_dict[key]
 
         msg = model.load_state_dict(state_dict, strict=False)
@@ -168,24 +198,28 @@ def main(args, config):
 
             cosine_lr_schedule(optimizer, epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
 
-            train(model, train_loader, optimizer, epoch, device, config)
+            train_stats = train(model, train_loader, optimizer, epoch, device, config, scaler)  # Pass scaler
 
         if args.evaluate:
             break
 
         if utils.is_main_process():
-
             save_obj = {
                 'model': model_without_ddp.state_dict(),
-                # 'optimizer': optimizer.state_dict(),
-                # 'config': config,
-                # 'epoch': epoch,
             }
             prefix = args.checkpoint.split('/')[-1].split('.')[0]
             if args.is_save_path and epoch > 20:
                 torch.save(save_obj, os.path.join(args.output_dir, '%s_rad_%02d.pth' % (prefix, epoch)))
+
+            # Clear memory before evaluation
+            torch.cuda.empty_cache()
+            
             vqa_result = evaluation(model, test_loader, device, config)
             json.dump(vqa_result, open(os.path.join(args.result_dir, '%s_vqa_result_%s.json' % (prefix, epoch)), 'w'))
+
+            # Clear memory after evaluation
+            del vqa_result
+            torch.cuda.empty_cache()
 
         if args.distributed:
             dist.barrier()
@@ -197,7 +231,6 @@ def main(args, config):
     # compute acc
     res_file_path = '%s/result/%s_vqa_result_<epoch>.json' % (args.output_dir, prefix)
     compute_vqa_acc(answer_list_path=config[args.dataset_use]['test_file'][0], epoch=config['max_epoch'], res_file_path=res_file_path)
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -217,9 +250,12 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # args.output_dir = '/mnt/sda/lpf/weights/output/V2/vqa/' + args.dataset_use + args.output_suffix
+    args.output_dir = '/mnt/sda/lpf/weights/output/V2/vqa/' + args.dataset_use + args.output_suffix
 
     config = yaml.load(open('./configs/VQA.yaml', 'r'), Loader=yaml.Loader)
+
+    # Add evaluation chunk size to config
+    config['eval_chunk_size'] = 100  # Process evaluation in chunks of 100 samples
 
     args.result_dir = os.path.join(args.output_dir, 'result')
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -230,4 +266,8 @@ if __name__ == '__main__':
 
     print("config: ", config)
     print("args: ", args)
+    
+    # Clear cache before starting
+    torch.cuda.empty_cache()
+    
     main(args, config)

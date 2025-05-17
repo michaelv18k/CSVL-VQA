@@ -15,7 +15,13 @@ class MUMC_VQA(nn.Module):
                  ):
         super().__init__()
 
-        self.tokenizer = tokenizer
+    # Initialize tokenizer properly (critical fix!)
+        if tokenizer is None or isinstance(tokenizer, bool):  # Handle missing/broken tokenizer
+            from transformers import AutoTokenizer  # <-- Add this import
+            self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")  # <-- Default tokenizer
+        else:
+            self.tokenizer = tokenizer  # Use the provided tokenizer if valid
+            # self.tokenizer = tokenizer
 
         self.distill = config['distill']
 

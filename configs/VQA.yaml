@@ -39,4 +39,4 @@ init_lr: 2e-5
 weight_decay: 0.05
 #min_lr: 0
 min_lr: 1e-8
-  max_epoch: 40
+max_epoch: 40
